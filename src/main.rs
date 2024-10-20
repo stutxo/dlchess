@@ -150,10 +150,8 @@ fn main() {
     let oracle = ChessOracle::new();
     let game_setup = oracle.generate_game_setup();
 
-    // Serialize/deserialize example
-    let serialized = serde_json::to_string(&game_setup).unwrap();
-    let deserialized: DLChess = serde_json::from_str(&serialized).unwrap();
+    oracle.verify_all_outcomes(&game_setup.attestations);
 
-    // Verify and decrypt white's attestation
-    oracle.verify_all_outcomes(&deserialized.attestations);
+    // Serialize/deserialize example
+    let _serialized = serde_json::to_string(&game_setup).unwrap();
 }
