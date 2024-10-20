@@ -103,7 +103,27 @@ impl ChessOracle {
         }
     }
 
-    pub fn verify_and_decrypt(&self, attestation: &Attestation) -> Option<Scalar> {
+    pub fn verify_all_outcomes(&self, attestations: &GameAttestations) {
+        let outcomes = [
+            ("White", &attestations.white, 0),
+            ("Black", &attestations.black, 1),
+            ("Draw", &attestations.draw, 2),
+        ];
+
+        for (name, attestation, index) in outcomes.iter() {
+            if let Some(decryption_key) = self.verify_and_decrypt_with_index(attestation, *index) {
+                println!("{} outcome decryption key: {}", name, decryption_key);
+            } else {
+                println!("{} outcome attestation verification failed.", name);
+            }
+        }
+    }
+
+    pub fn verify_and_decrypt_with_index(
+        &self,
+        attestation: &Attestation,
+        index: usize,
+    ) -> Option<Scalar> {
         let message = Message::<Public>::plain("text-bitcoin", &attestation.message);
 
         if !self.schnorr.verify_encrypted_signature(
@@ -115,12 +135,11 @@ impl ChessOracle {
             return None;
         }
 
-        println!("white encrypted key: {:?}", self.secret_keys[0]);
+        println!("{} encrypted key: {:?}", index, self.secret_keys[index]);
 
-        let signature = self.schnorr.decrypt_signature(
-            self.secret_keys[0], // Using white's key for example
-            attestation.adaptor_sig.clone(),
-        );
+        let signature = self
+            .schnorr
+            .decrypt_signature(self.secret_keys[index], attestation.adaptor_sig.clone());
 
         self.schnorr
             .recover_decryption_key(&attestation.key, &attestation.adaptor_sig, &signature)
@@ -136,7 +155,5 @@ fn main() {
     let deserialized: DLChess = serde_json::from_str(&serialized).unwrap();
 
     // Verify and decrypt white's attestation
-    if let Some(decryption_key) = oracle.verify_and_decrypt(&deserialized.attestations.white) {
-        println!("White decryption key: {}", decryption_key);
-    }
+    oracle.verify_all_outcomes(&deserialized.attestations);
 }
