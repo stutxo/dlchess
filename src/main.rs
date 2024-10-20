@@ -7,18 +7,9 @@ use schnorr_fun::{
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use std::convert::TryInto;
-
-#[derive(Serialize, Deserialize)]
-pub enum GameResult {
-    White,
-    Black,
-    Draw,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct DLChess {
-    public_key: Vec<u8>,
+    public_key: Point<EvenY>,
     attestations: GameAttestations,
 }
 
@@ -31,62 +22,9 @@ pub struct GameAttestations {
 
 #[derive(Serialize, Deserialize)]
 pub struct Attestation {
-    key: Vec<u8>,
-    adaptor_sig: SerializableEncryptedSignature,
+    key: Point<Normal>,
+    adaptor_sig: EncryptedSignature,
     message: Vec<u8>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct SerializableEncryptedSignature {
-    r_point: SerializablePoint,
-    s_hat: SerializableScalar,
-    needs_negation: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct SerializablePoint {
-    bytes: Vec<u8>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct SerializableScalar {
-    bytes: Vec<u8>,
-}
-
-impl From<EncryptedSignature> for SerializableEncryptedSignature {
-    fn from(sig: EncryptedSignature) -> Self {
-        SerializableEncryptedSignature {
-            r_point: SerializablePoint {
-                bytes: sig.R.to_bytes().to_vec(),
-            },
-            s_hat: SerializableScalar {
-                bytes: sig.s_hat.to_bytes().to_vec(),
-            },
-            needs_negation: sig.needs_negation,
-        }
-    }
-}
-
-impl From<SerializableEncryptedSignature> for EncryptedSignature {
-    fn from(sig: SerializableEncryptedSignature) -> Self {
-        let r_bytes: [u8; 33] = sig.r_point.bytes[..]
-            .try_into()
-            .expect("slice with incorrect length");
-        let r: Point<EvenY> =
-            Point::from_xonly_bytes(r_bytes[1..].try_into().expect("Invalid R point bytes"))
-                .expect("Invalid R point bytes");
-
-        let s_hat_bytes: [u8; 32] = sig.s_hat.bytes[..]
-            .try_into()
-            .expect("slice with incorrect length");
-        let s_hat = Scalar::from_bytes_mod_order(s_hat_bytes);
-
-        EncryptedSignature {
-            R: r,
-            s_hat,
-            needs_negation: sig.needs_negation,
-        }
-    }
 }
 
 pub struct ChessOracle {
@@ -121,7 +59,26 @@ impl ChessOracle {
         let messages = self.generate_messages();
         let adaptor_sigs = self.generate_adaptor_signatures(&encrypted_keys, &messages);
 
-        self.build_dlchess(encrypted_keys, adaptor_sigs)
+        DLChess {
+            public_key: self.signing_keypair.public_key(),
+            attestations: GameAttestations {
+                white: Attestation {
+                    key: encrypted_keys.white,
+                    adaptor_sig: adaptor_sigs.white,
+                    message: b"white".to_vec(),
+                },
+                black: Attestation {
+                    key: encrypted_keys.black,
+                    adaptor_sig: adaptor_sigs.black,
+                    message: b"black".to_vec(),
+                },
+                draw: Attestation {
+                    key: encrypted_keys.draw,
+                    adaptor_sig: adaptor_sigs.draw,
+                    message: b"draw".to_vec(),
+                },
+            },
+        }
     }
 
     fn generate_secret_keys(&self) -> GameSecretKeys {
@@ -171,33 +128,6 @@ impl ChessOracle {
             ),
         }
     }
-
-    fn build_dlchess(
-        &self,
-        encrypted_keys: GameEncryptedKeys,
-        adaptor_sigs: GameAdaptorSignatures,
-    ) -> DLChess {
-        DLChess {
-            public_key: self.signing_keypair.public_key().to_bytes().to_vec(),
-            attestations: GameAttestations {
-                white: Attestation {
-                    key: encrypted_keys.white.to_bytes().to_vec(),
-                    adaptor_sig: adaptor_sigs.white.into(),
-                    message: b"white".to_vec(),
-                },
-                black: Attestation {
-                    key: encrypted_keys.black.to_bytes().to_vec(),
-                    adaptor_sig: adaptor_sigs.black.into(),
-                    message: b"black".to_vec(),
-                },
-                draw: Attestation {
-                    key: encrypted_keys.draw.to_bytes().to_vec(),
-                    adaptor_sig: adaptor_sigs.draw.into(),
-                    message: b"draw".to_vec(),
-                },
-            },
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -208,9 +138,9 @@ struct GameSecretKeys {
 }
 
 struct GameEncryptedKeys {
-    white: Point,
-    black: Point,
-    draw: Point,
+    white: Point<Normal>,
+    black: Point<Normal>,
+    draw: Point<Normal>,
 }
 
 struct GameMessages<'a> {
@@ -230,63 +160,40 @@ fn main() {
     let game_setup = oracle.generate_game_setup();
 
     let serialized = serde_json::to_string(&game_setup).unwrap();
-
     let deserialized: DLChess = serde_json::from_str(&serialized).unwrap();
-
-    let public_key_bytes: [u8; 33] = deserialized.public_key[..]
-        .try_into()
-        .expect("slice with incorrect length");
-
-    let public_key = Point::<EvenY>::from_xonly_bytes(
-        public_key_bytes[1..]
-            .try_into()
-            .expect("slice with incorrect length"),
-    )
-    .unwrap();
 
     let white_att = &deserialized.attestations.white;
 
-    let white_adaptor_sig: EncryptedSignature = white_att.adaptor_sig.clone().into();
+    let white_key = white_att.key;
 
-    let white_encrypted_key_bytes: [u8; 33] = white_att.key[..]
-        .try_into()
-        .expect("slice with incorrect length");
-    let white_encrypted_key: Point<Normal> = Point::from_bytes(white_encrypted_key_bytes).unwrap();
-
-    println!("White encrypted key: {:?}", white_encrypted_key);
-
-    let white_message = Message::<Public>::plain("text-bitcoin", &white_att.message);
+    println!("White encrypted key: {:?}", white_key);
 
     let nonce_gen = nonce::Synthetic::<Sha256, nonce::GlobalRng<ThreadRng>>::default();
     let schnorr = Schnorr::<Sha256, _>::new(nonce_gen);
 
+    let white_message = Message::<Public>::plain("text-bitcoin", &white_att.message);
+
     assert!(schnorr.verify_encrypted_signature(
-        &public_key,
-        &white_encrypted_key,
+        &deserialized.public_key,
+        &white_key,
         white_message,
-        &white_adaptor_sig
+        &white_att.adaptor_sig
     ));
 
-    let white_signature = oracle
-        .schnorr
-        .decrypt_signature(oracle.secret_keys.unwrap().white, white_adaptor_sig.clone());
+    let white_signature = oracle.schnorr.decrypt_signature(
+        oracle.secret_keys.unwrap().white,
+        white_att.adaptor_sig.clone(),
+    );
 
     let serialized_sig = serde_json::to_string(&white_signature).unwrap();
+    let deserialized_sig: schnorr_fun::Signature<Public> =
+        serde_json::from_str(&serialized_sig).unwrap();
 
-    let deserialized_sig: schnorr_fun::Signature = serde_json::from_str(&serialized_sig).unwrap();
-
-    match schnorr.recover_decryption_key(
-        &white_encrypted_key,
-        &white_adaptor_sig,
-        &deserialized_sig,
-    ) {
+    match schnorr.recover_decryption_key(&white_att.key, &white_att.adaptor_sig, &deserialized_sig)
+    {
         Some(decryption_key) => {
-            println!("White won!! {}", decryption_key);
-            //need to check that decryption_key can be used to create white_encrypted_key
-            assert_eq!(
-                schnorr.encryption_key_for(&decryption_key),
-                white_encrypted_key
-            );
+            println!("white decrypted key!! {}", decryption_key);
+            assert_eq!(schnorr.encryption_key_for(&decryption_key), white_att.key);
         }
         None => eprintln!("signature is not the decryption of our original encrypted signature"),
     }
