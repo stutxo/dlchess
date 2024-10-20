@@ -111,7 +111,9 @@ impl ChessOracle {
         ];
 
         for (name, attestation, index) in outcomes.iter() {
-            if let Some(decryption_key) = self.verify_and_decrypt_with_index(attestation, *index) {
+            if let Some(decryption_key) =
+                self.verify_and_decrypt_with_index(attestation, *index, name)
+            {
                 println!("{} outcome decryption key: {}", name, decryption_key);
             } else {
                 println!("{} outcome attestation verification failed.", name);
@@ -123,6 +125,7 @@ impl ChessOracle {
         &self,
         attestation: &Attestation,
         index: usize,
+        name: &str,
     ) -> Option<Scalar> {
         let message = Message::<Public>::plain("text-bitcoin", &attestation.message);
 
@@ -135,7 +138,7 @@ impl ChessOracle {
             return None;
         }
 
-        println!("{} encrypted key: {:?}", index, self.secret_keys[index]);
+        println!("{} encrypted key: {}", name, attestation.key);
 
         let signature = self
             .schnorr
