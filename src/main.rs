@@ -138,12 +138,15 @@ impl ChessOracle {
             return None;
         }
 
+        //step 1 is share all 3 of these keys with players so they can use it to build the tapscript paths
         println!("{} encrypted key: {}", name, attestation.key);
 
+        //step 2 is share the result of the game by sending this signature
         let signature = self
             .schnorr
             .decrypt_signature(self.secret_keys[index], attestation.adaptor_sig.clone());
 
+        //step 3 is players run this to get the decryption key to unlock the script
         self.schnorr
             .recover_decryption_key(&attestation.key, &attestation.adaptor_sig, &signature)
     }
