@@ -7,10 +7,10 @@ use bitcoin::{
     consensus::{deserialize, encode::serialize_hex},
     hex::FromHex,
     key::{Keypair, Secp256k1},
-    opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_VERIFY},
+    opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY},
     script::Builder,
-    secp256k1::{self, Message},
-    sighash::{self, Prevouts, SighashCache, TapSighashType},
+    secp256k1::{self, Message, SecretKey},
+    sighash::{Prevouts, SighashCache, TapSighashType},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
     transaction, Address, Amount, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Txid,
     XOnlyPublicKey,
@@ -18,6 +18,11 @@ use bitcoin::{
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+const WHITE_PLAYER_SECRET_KEY: &str =
+    "0eae283124be737cfef1a2f224e252fe501614987fdc7d8afda607011bd7f939";
+const BLACK_PLAYER_SECRET_KEY: &str =
+    "8302235fe68dccbeb724807416598359ffca97766684cc3fd3bd1b7d513cc0be";
 
 const WHITE_PUB_KEY: &str = "020dea9012c69c522326ac5b44200225d653b0f5034e2e06f85e394a069da14856";
 const BLACK_PUB_KEY: &str = "03800ced3eeb9d407dbcc3c79d74cba26a31a7309151b90685f31b888f1bb04ea9";
@@ -45,15 +50,28 @@ struct UtxoStatus {
 
 #[tokio::main]
 async fn main() {
-    match create_script() {
+    let secp = Secp256k1::new();
+
+    let white_player_secret = SecretKey::from_str(WHITE_PLAYER_SECRET_KEY).unwrap();
+
+    let black_player_secret = SecretKey::from_str(BLACK_PLAYER_SECRET_KEY).unwrap();
+
+    let white_player_keys = Keypair::from_secret_key(&secp, &white_player_secret);
+    let black_player_keys = Keypair::from_secret_key(&secp, &black_player_secret);
+
+    match create_script(white_player_keys, black_player_keys) {
         Ok(taproot_spend_info) => {
-            unlock_script(taproot_spend_info).await;
+            unlock_script(taproot_spend_info, white_player_keys, black_player_keys).await;
         }
         Err(e) => println!("Error: {}", e),
     }
 }
 
-async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
+async fn unlock_script(
+    taproot_spend_info: TaprootSpendInfo,
+    white_player_keys: Keypair,
+    black_player_keys: Keypair,
+) {
     let secp = Secp256k1::new();
 
     let address = Address::p2tr_tweaked(taproot_spend_info.output_key(), bitcoin::Network::Signet);
@@ -135,7 +153,10 @@ async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
     let unsigned_tx_clone = unsigned_tx.clone();
 
     //set to white for testing
-    let white_winner_script = dlchess_script(get_xonly_pubkey(WHITE_PUB_KEY).unwrap());
+    let white_winner_script = dlchess_script(
+        get_xonly_pubkey(WHITE_PUB_KEY).unwrap(),
+        white_player_keys.x_only_public_key().0,
+    );
     let tap_leaf_hash = TapLeafHash::from_script(&white_winner_script, LeafVersion::TapScript);
 
     let white_priv_key = Keypair::from_secret_key(
@@ -157,25 +178,38 @@ async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
 
         let message = Message::from(sighash);
 
-        let signature = secp.sign_schnorr_no_aux_rand(&message, &white_priv_key);
+        let oracle_signature = secp.sign_schnorr_no_aux_rand(&message, &white_priv_key);
 
-        println!("Signature: {:?}", signature);
-
-        let verify_sig = secp.verify_schnorr(
-            &signature,
+        let verify_oracle_sig = secp.verify_schnorr(
+            &oracle_signature,
             &message,
             &get_xonly_pubkey(WHITE_PUB_KEY).unwrap(),
         );
 
-        match verify_sig {
-            Ok(_) => println!("Signature verified"),
+        match verify_oracle_sig {
+            Ok(_) => println!("Orcale signature verified"),
+            Err(e) => println!("Signature verification failed: {:?}", e),
+        };
+
+        let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, &white_player_keys);
+
+        let verify_player_sig = secp.verify_schnorr(
+            &winning_player_signature,
+            &message,
+            &white_player_keys.x_only_public_key().0,
+        );
+
+        match verify_player_sig {
+            Ok(_) => println!("Winning player signature verified"),
             Err(e) => println!("Signature verification failed: {:?}", e),
         };
 
         let script_ver = (white_winner_script.clone(), LeafVersion::TapScript);
         let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
 
-        input.witness.push(signature.serialize());
+        //test bad sig
+        input.witness.push(winning_player_signature.serialize());
+        input.witness.push(oracle_signature.serialize());
         input.witness.push(script_ver.0.into_bytes());
         input.witness.push(ctrl_block.serialize());
     }
@@ -193,12 +227,26 @@ async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
     println!("TXID: {:?}", res);
 }
 
-fn create_script() -> Result<TaprootSpendInfo> {
+fn create_script(
+    white_player_keys: Keypair,
+    black_player_keys: Keypair,
+) -> Result<TaprootSpendInfo> {
     let secp = Secp256k1::new();
 
-    let internal_key = get_xonly_pubkey(WHITE_PUB_KEY)?;
-    let white_script = dlchess_script(get_xonly_pubkey(WHITE_PUB_KEY)?);
-    let black_script = dlchess_script(get_xonly_pubkey(BLACK_PUB_KEY)?);
+    let combined_pubkey = secp256k1::PublicKey::combine_keys(&[
+        &white_player_keys.public_key(),
+        &black_player_keys.public_key(),
+    ])
+    .expect("Failed to combine keys");
+
+    let white_script = dlchess_script(
+        get_xonly_pubkey(WHITE_PUB_KEY)?,
+        white_player_keys.x_only_public_key().0,
+    );
+    let black_script = dlchess_script(
+        get_xonly_pubkey(BLACK_PUB_KEY)?,
+        black_player_keys.x_only_public_key().0,
+    );
 
     println!("White Script: {:?}", white_script);
 
@@ -207,7 +255,7 @@ fn create_script() -> Result<TaprootSpendInfo> {
         .unwrap()
         .add_leaf(1, black_script)
         .unwrap()
-        .finalize(&secp, internal_key)
+        .finalize(&secp, combined_pubkey.into())
         .unwrap();
 
     Ok(taproot_spend_info)
@@ -219,9 +267,11 @@ fn get_xonly_pubkey(hex: &str) -> Result<XOnlyPublicKey> {
     Ok(XOnlyPublicKey::from(pubkey))
 }
 
-fn dlchess_script(oracle_pubkey: XOnlyPublicKey) -> ScriptBuf {
+fn dlchess_script(oracle_pubkey: XOnlyPublicKey, player_pubkey: XOnlyPublicKey) -> ScriptBuf {
     Builder::new()
         .push_x_only_key(&oracle_pubkey)
+        .push_opcode(OP_CHECKSIGVERIFY)
+        .push_x_only_key(&player_pubkey)
         .push_opcode(OP_CHECKSIG)
         .into_script()
 }
