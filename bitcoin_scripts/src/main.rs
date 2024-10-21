@@ -7,7 +7,7 @@ use bitcoin::{
     consensus::{deserialize, encode::serialize_hex},
     hex::FromHex,
     key::{Keypair, Secp256k1},
-    opcodes::all::OP_CHECKSIGVERIFY,
+    opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_VERIFY},
     script::Builder,
     secp256k1::{self, Message},
     sighash::{self, Prevouts, SighashCache, TapSighashType},
@@ -136,6 +136,7 @@ async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
 
     //set to white for testing
     let white_winner_script = dlchess_script(get_xonly_pubkey(WHITE_PUB_KEY).unwrap());
+    let tap_leaf_hash = TapLeafHash::from_script(&white_winner_script, LeafVersion::TapScript);
 
     let white_priv_key = Keypair::from_secret_key(
         &secp,
@@ -149,14 +150,16 @@ async fn unlock_script(taproot_spend_info: TaprootSpendInfo) {
             .taproot_script_spend_signature_hash(
                 index,
                 &Prevouts::All(&prev_tx),
-                TapLeafHash::from(sighash::ScriptPath::with_defaults(&white_winner_script)),
+                tap_leaf_hash,
                 sighash_type,
             )
             .expect("failed to construct sighash");
 
         let message = Message::from(sighash);
 
-        let signature = secp.sign_schnorr(&message, &white_priv_key);
+        let signature = secp.sign_schnorr_no_aux_rand(&message, &white_priv_key);
+
+        println!("Signature: {:?}", signature);
 
         let verify_sig = secp.verify_schnorr(
             &signature,
@@ -197,6 +200,8 @@ fn create_script() -> Result<TaprootSpendInfo> {
     let white_script = dlchess_script(get_xonly_pubkey(WHITE_PUB_KEY)?);
     let black_script = dlchess_script(get_xonly_pubkey(BLACK_PUB_KEY)?);
 
+    println!("White Script: {:?}", white_script);
+
     let taproot_spend_info = TaprootBuilder::new()
         .add_leaf(1, white_script)
         .unwrap()
@@ -217,6 +222,6 @@ fn get_xonly_pubkey(hex: &str) -> Result<XOnlyPublicKey> {
 fn dlchess_script(oracle_pubkey: XOnlyPublicKey) -> ScriptBuf {
     Builder::new()
         .push_x_only_key(&oracle_pubkey)
-        .push_opcode(OP_CHECKSIGVERIFY)
+        .push_opcode(OP_CHECKSIG)
         .into_script()
 }
