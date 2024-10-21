@@ -159,5 +159,5 @@ fn main() {
     oracle.verify_all_outcomes(&game_setup.attestations);
 
     // Serialize/deserialize example
-    let _serialized = serde_json::to_string(&game_setup).unwrap();
+    // let _serialized = serde_json::to_string(&game_setup).unwrap();
 }
