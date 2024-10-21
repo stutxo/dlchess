@@ -1,9 +1,9 @@
-use bitcoin::key::Secp256k1;
-use bitcoin::opcodes::all::OP_CHECKSIGVERIFY;
-use bitcoin::script::Builder;
-use bitcoin::taproot::TaprootBuilder;
-use bitcoin::{Address, ScriptBuf, XOnlyPublicKey};
-use hex::FromHex;
+use anyhow::Result;
+
+use bitcoin::{
+    key::Secp256k1, opcodes::all::OP_CHECKSIGVERIFY, script::Builder, taproot::TaprootBuilder,
+    Address, ScriptBuf, XOnlyPublicKey,
+};
 
 const WHITE_PUB_KEY: &str = "020dea9012c69c522326ac5b44200225d653b0f5034e2e06f85e394a069da14856";
 const BLACK_PUB_KEY: &str = "03800ced3eeb9d407dbcc3c79d74cba26a31a7309151b90685f31b888f1bb04ea9";
@@ -13,14 +13,20 @@ const WHITE_OUTCOME_DECRYPTION_KEY: &str =
 const BLACK_OUTCOME_DECRYPTION_KEY: &str =
     "1ee5c6aaa46aba68876c0b25f13d454ee223720be2350fa089e4077b688a4078";
 
+const CONTRACT_ADDRESS: &str = "tb1pq0adgccxa5a6z6sqegtg9t22vq9nlswhje9c7ptqerk56mtxzkes9lskgd";
+
 fn main() {
-    match create_bitcoin_script() {
+    match create_script() {
         Ok(address) => println!("Address: {}", address),
         Err(e) => println!("Error: {}", e),
     }
+
+    unlock_script()
 }
 
-fn create_bitcoin_script() -> Result<Address, &'static str> {
+fn unlock_script() {}
+
+fn create_script() -> Result<Address> {
     let secp = Secp256k1::new();
 
     let internal_key = get_xonly_pubkey(WHITE_PUB_KEY)?;
@@ -40,10 +46,9 @@ fn create_bitcoin_script() -> Result<Address, &'static str> {
     Ok(address)
 }
 
-fn get_xonly_pubkey(hex: &str) -> Result<XOnlyPublicKey, &'static str> {
-    let bytes = hex::decode(hex).map_err(|_| "Invalid Hex String")?;
-    let pubkey =
-        bitcoin::secp256k1::PublicKey::from_slice(&bytes).map_err(|_| "Invalid PublicKey")?;
+fn get_xonly_pubkey(hex: &str) -> Result<XOnlyPublicKey> {
+    let bytes = hex::decode(hex)?;
+    let pubkey = bitcoin::secp256k1::PublicKey::from_slice(&bytes)?;
     Ok(XOnlyPublicKey::from(pubkey))
 }
 
