@@ -405,11 +405,17 @@ fn dlchess_script_win(oracle_pubkey: XOnlyPublicKey, player_pubkey: XOnlyPublicK
         .into_script()
 }
 
-fn dlchess_script_draw(oracle_pubkey: XOnlyPublicKey, player_pubkey: XOnlyPublicKey) -> ScriptBuf {
+fn dlchess_script_draw(
+    oracle_pubkey: XOnlyPublicKey,
+    white_player_pubkey: XOnlyPublicKey,
+    black_player_pubkey: XOnlyPublicKey,
+) -> ScriptBuf {
     Builder::new()
         .push_x_only_key(&oracle_pubkey)
         .push_opcode(OP_CHECKSIGVERIFY)
-        .push_x_only_key(&player_pubkey)
+        .push_x_only_key(&white_player_pubkey)
+        .push_opcode(OP_CHECKSIGVERIFY)
+        .push_x_only_key(&black_player_pubkey)
         .push_opcode(OP_CHECKSIG)
         .into_script()
 }
