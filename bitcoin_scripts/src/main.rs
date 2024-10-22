@@ -37,14 +37,6 @@ const WHITE_PLAYER_SECRET_KEY: &str =
 const BLACK_PLAYER_SECRET_KEY: &str =
     "8302235fe68dccbeb724807416598359ffca97766684cc3fd3bd1b7d513cc0be";
 
-const WHITE_PUB_KEY: &str = "020dea9012c69c522326ac5b44200225d653b0f5034e2e06f85e394a069da14856";
-const BLACK_PUB_KEY: &str = "03800ced3eeb9d407dbcc3c79d74cba26a31a7309151b90685f31b888f1bb04ea9";
-
-const WHITE_OUTCOME_DECRYPTION_KEY: &str =
-    "72e5ef60a984a562e6bbe25c8f5d0dd09c662be53e4365da868bc8910efc9633";
-const BLACK_OUTCOME_DECRYPTION_KEY: &str =
-    "1ee5c6aaa46aba68876c0b25f13d454ee223720be2350fa089e4077b688a4078";
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -121,7 +113,7 @@ async fn main() {
     match args.command {
         Commands::CreateAddress => {
             match create_script(white_player_keys, black_player_keys, args.game_id.as_str()).await {
-                Ok(taproot_spend_info) => {
+                Ok((taproot_spend_info, oracle_response)) => {
                     let address = Address::p2tr_tweaked(
                         taproot_spend_info.output_key(),
                         bitcoin::Network::Signet,
@@ -133,9 +125,14 @@ async fn main() {
         }
         Commands::SpendAddressUnHappyPath => {
             match create_script(white_player_keys, black_player_keys, args.game_id.as_str()).await {
-                Ok(taproot_spend_info) => {
-                    unlock_script(taproot_spend_info, white_player_keys, black_player_keys).await;
-                    println!("🎉 Address spent successfully");
+                Ok((taproot_spend_info, oracle_response)) => {
+                    unlock_script(
+                        taproot_spend_info,
+                        white_player_keys,
+                        black_player_keys,
+                        oracle_response,
+                    )
+                    .await;
                 }
                 Err(e) => println!("Error creating script for spending: {}", e),
             }
@@ -147,9 +144,15 @@ async fn unlock_script(
     taproot_spend_info: TaprootSpendInfo,
     white_player_keys: Keypair,
     black_player_keys: Keypair,
+    oracle_response: DLChess,
 ) {
     let address = Address::p2tr_tweaked(taproot_spend_info.output_key(), bitcoin::Network::Signet);
-    println!("Address: {address}",);
+    println!("Game Address: {address}",);
+
+    if !oracle_response.game_over {
+        println!("Game still in progress, cannot spend yet");
+        return;
+    }
 
     let secp = Secp256k1::new();
 
@@ -167,6 +170,14 @@ async fn unlock_script(
 
     if utxos.is_empty() {
         println!("No UTXOs found, pls fund address {:?}", address);
+        return;
+    }
+
+    if utxos.len() < 2 {
+        println!(
+            "Only 1 UTXO found, player 2 needs to fund address {:?}",
+            address
+        );
         return;
     }
 
@@ -226,16 +237,46 @@ async fn unlock_script(
 
     let unsigned_tx_clone = unsigned_tx.clone();
 
-    //set to white for testing
-    let white_winner_script = dlchess_script(
-        get_xonly_pubkey(WHITE_PUB_KEY).unwrap(),
-        white_player_keys.x_only_public_key().0,
+    let schnorr: Schnorr<Sha256, nonce::Synthetic<Sha256, nonce::GlobalRng<ThreadRng>>> =
+        Schnorr::new(nonce::Synthetic::default());
+
+    let winning_pub_key = &oracle_response.outcome.as_ref().unwrap().attestation.key;
+
+    let winning_player = match &oracle_response
+        .outcome
+        .as_ref()
+        .unwrap()
+        .attestation
+        .message
+    {
+        msg if msg == b"white" => &white_player_keys,
+        msg if msg == b"black" => &black_player_keys,
+        _ => panic!("Invalid outcome for now"),
+    };
+
+    println!("🔑 Winning player: {:?}", winning_player);
+
+    let oracle_winning_decryption_key = schnorr.recover_decryption_key(
+        winning_pub_key,
+        &oracle_response
+            .outcome
+            .as_ref()
+            .unwrap()
+            .attestation
+            .adaptor_sig,
+        &oracle_response.outcome.as_ref().unwrap().signature,
     );
-    let tap_leaf_hash = TapLeafHash::from_script(&white_winner_script, LeafVersion::TapScript);
+
+    let winner_script = dlchess_script(
+        XOnlyPublicKey::from_slice(&winning_pub_key.to_xonly_bytes()).unwrap(),
+        winning_player.x_only_public_key().0,
+    );
+    let tap_leaf_hash = TapLeafHash::from_script(&winner_script, LeafVersion::TapScript);
 
     let white_priv_key = Keypair::from_secret_key(
         &secp,
-        &secp256k1::SecretKey::from_str(WHITE_OUTCOME_DECRYPTION_KEY).unwrap(),
+        &secp256k1::SecretKey::from_slice(&oracle_winning_decryption_key.unwrap().to_bytes())
+            .unwrap(),
     );
 
     let sighash_type = TapSighashType::Default;
@@ -257,7 +298,7 @@ async fn unlock_script(
         let verify_oracle_sig = secp.verify_schnorr(
             &oracle_signature,
             &message,
-            &get_xonly_pubkey(WHITE_PUB_KEY).unwrap(),
+            &XOnlyPublicKey::from_slice(&winning_pub_key.to_xonly_bytes()).unwrap(),
         );
 
         assert!(
@@ -265,12 +306,12 @@ async fn unlock_script(
             "Oracle signature verification failed"
         );
 
-        let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, &white_player_keys);
+        let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, &winning_player);
 
         let verify_player_sig = secp.verify_schnorr(
             &winning_player_signature,
             &message,
-            &white_player_keys.x_only_public_key().0,
+            &winning_player.x_only_public_key().0,
         );
 
         assert!(
@@ -278,7 +319,7 @@ async fn unlock_script(
             "Winning player signature verification failed"
         );
 
-        let script_ver = (white_winner_script.clone(), LeafVersion::TapScript);
+        let script_ver = (winner_script.clone(), LeafVersion::TapScript);
         let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
 
         //test bad sig
@@ -309,7 +350,7 @@ async fn create_script(
     white_player_keys: Keypair,
     black_player_keys: Keypair,
     game_id: &str,
-) -> Result<TaprootSpendInfo> {
+) -> Result<(TaprootSpendInfo, DLChess)> {
     println!("🏗️ Creating address for game: {}", game_id);
     let secp = Secp256k1::new();
 
@@ -352,13 +393,7 @@ async fn create_script(
         .finalize(&secp, combined_pubkey.into())
         .unwrap();
 
-    Ok(taproot_spend_info)
-}
-
-fn get_xonly_pubkey(hex: &str) -> Result<XOnlyPublicKey> {
-    let bytes = hex::decode(hex)?;
-    let pubkey = bitcoin::secp256k1::PublicKey::from_slice(&bytes)?;
-    Ok(XOnlyPublicKey::from(pubkey))
+    Ok((taproot_spend_info, oracle_response))
 }
 
 fn dlchess_script(oracle_pubkey: XOnlyPublicKey, player_pubkey: XOnlyPublicKey) -> ScriptBuf {
