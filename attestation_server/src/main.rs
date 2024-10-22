@@ -6,15 +6,17 @@ use axum::{
     Router,
 };
 use rand::rngs::ThreadRng;
+use reqwest::Client;
 use schnorr_fun::{
     adaptor::{Adaptor, EncryptedSign, EncryptedSignature},
     fun::{marker::*, nonce, KeyPair, Point, Scalar},
     Message, Schnorr, Signature,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::Sha256;
 use tokio::sync::Mutex;
-use tracing::Level;
+use tracing::{error, info, Level};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DLChess {
@@ -65,6 +67,7 @@ impl GameOutcome {
 struct Game {
     dl_chess: DLChess,
     secret_keys: HashMap<GameOutcome, Scalar>,
+    in_progress: bool,
 }
 
 #[derive(Clone)]
@@ -102,21 +105,62 @@ impl ChessOracle {
         let mut games = self.games.lock().await;
 
         if let Some(game) = games.get_mut(&game_id) {
-            let wining_outcome = GameOutcome::White;
-            let signature = self.schnorr.decrypt_signature(
-                game.secret_keys[&wining_outcome],
-                game.dl_chess.attestations.white.adaptor_sig.clone(),
-            );
+            if game.in_progress {
+                let client = Client::new();
 
-            let outcome = Outcome {
-                signature,
-                attestation: game.dl_chess.attestations.white.clone(),
-            };
+                let url = format!("https://lichess.org/api/game/{}", game_id);
 
-            game.dl_chess.outcome = Some(outcome);
-            game.dl_chess.game_over = true;
+                let res = client.get(url).send().await;
 
-            return game.dl_chess.clone();
+                if let Ok(response) = res {
+                    if response.status().is_success() {
+                        match response.json::<Value>().await {
+                            Ok(json) => {
+                                info!("Game status: {}", json["status"]);
+                                if let Some(winner) = json["winner"].as_str() {
+                                    info!("Winner: {}", winner);
+
+                                    let winning_outcome = match winner {
+                                        "white" => GameOutcome::White,
+                                        "black" => GameOutcome::Black,
+                                        _ => GameOutcome::Draw,
+                                    };
+
+                                    let attestation = match winning_outcome {
+                                        GameOutcome::White => &game.dl_chess.attestations.white,
+                                        GameOutcome::Black => &game.dl_chess.attestations.black,
+                                        GameOutcome::Draw => &game.dl_chess.attestations.draw,
+                                    };
+
+                                    let secret_key = game.secret_keys[&winning_outcome];
+
+                                    let signature = self.schnorr.decrypt_signature(
+                                        secret_key,
+                                        attestation.adaptor_sig.clone(),
+                                    );
+
+                                    let outcome = Outcome {
+                                        signature,
+                                        attestation: attestation.clone(),
+                                    };
+
+                                    game.dl_chess.outcome = Some(outcome);
+                                    game.dl_chess.game_over = true;
+                                    game.in_progress = false;
+                                }
+                            }
+                            Err(e) => error!("Failed to parse JSON: {:?}", e),
+                        }
+                    } else {
+                        error!("Request failed with status: {}", response.status());
+                    }
+                } else if let Err(e) = res {
+                    error!("Failed to send request: {:?}", e);
+                }
+                return game.dl_chess.clone();
+            } else {
+                return game.dl_chess.clone();
+            }
         }
 
         let mut secret_keys = HashMap::new();
@@ -168,6 +212,7 @@ impl ChessOracle {
             Game {
                 dl_chess: dl_chess.clone(),
                 secret_keys,
+                in_progress: true,
             },
         );
 
@@ -198,6 +243,6 @@ async fn get_game(Path(game_id): Path<String>, State(oracle): State<ChessOracle>
     let game_setup = oracle.generate_game_setup(game_id.clone()).await;
 
     let game = serde_json::to_string(&game_setup).unwrap();
-    println!("Game {}: {}", game_id, game);
+    info!("Game {}: {}", game_id, game);
     game
 }
