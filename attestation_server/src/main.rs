@@ -111,11 +111,11 @@ impl ChessOracle {
             if response.status().is_success() {
                 match response.json::<Value>().await {
                     Ok(json) => {
-                        info!("{}: Game status: {}", game_id, json["status"]);
-                        if let Some(winner) = json["winner"].as_str() {
-                            info!("{}: Winner : {}", game_id, winner);
+                        if let Some(game) = games.get_mut(&game_id) {
+                            info!("{}: Game status: {}", game_id, json["status"]);
+                            if let Some(winner) = json["winner"].as_str() {
+                                info!("{}: Winner : {}", game_id, winner);
 
-                            if let Some(game) = games.get_mut(&game_id) {
                                 if !game.dl_chess.game_over {
                                     let winning_outcome = match winner {
                                         "white" => GameOutcome::White,
@@ -143,77 +143,91 @@ impl ChessOracle {
                                     game.dl_chess.outcome = Some(outcome);
                                     game.dl_chess.game_over = true;
                                 }
-                                return Ok(game.dl_chess.clone());
+                                Ok(game.dl_chess.clone())
+                            } else {
+                                info!("{}: Game not over", game_id);
+                                Ok(game.dl_chess.clone())
                             }
+                        } else {
+                            info!("{}: Game not found in cache", game_id);
+                            let mut secret_keys = HashMap::new();
+                            let mut attestations = HashMap::new();
+
+                            for outcome in
+                                &[GameOutcome::White, GameOutcome::Black, GameOutcome::Draw]
+                            {
+                                let secret_key = Scalar::random(&mut rand::thread_rng());
+                                let encrypted_key = self.schnorr.encryption_key_for(&secret_key);
+
+                                let message = Message::<Public>::plain(
+                                    match outcome {
+                                        GameOutcome::White => "White",
+                                        GameOutcome::Black => "Black",
+                                        GameOutcome::Draw => "Draw",
+                                    },
+                                    outcome.message(),
+                                );
+
+                                let adaptor_sig = self.schnorr.encrypted_sign(
+                                    &self.signing_keypair,
+                                    &encrypted_key,
+                                    message,
+                                );
+
+                                attestations.insert(
+                                    *outcome,
+                                    Attestation {
+                                        key: encrypted_key,
+                                        adaptor_sig,
+                                        message: outcome.message().to_vec(),
+                                    },
+                                );
+
+                                secret_keys.insert(*outcome, secret_key);
+                            }
+
+                            let dl_chess = DLChess {
+                                oracle_public_key: self.signing_keypair.public_key(),
+                                attestations: GameAttestations {
+                                    white: attestations[&GameOutcome::White].clone(),
+                                    black: attestations[&GameOutcome::Black].clone(),
+                                    draw: attestations[&GameOutcome::Draw].clone(),
+                                },
+                                outcome: None,
+                                game_id: game_id.clone(),
+                                game_over: false,
+                            };
+
+                            games.insert(
+                                game_id.clone(),
+                                Game {
+                                    dl_chess: dl_chess.clone(),
+                                    secret_keys,
+                                },
+                            );
+
+                            Ok(dl_chess)
                         }
                     }
-                    Err(e) => error!("Failed to parse JSON: {:?}", e),
+                    Err(e) => {
+                        error!("Failed to parse JSON: {:?}", e);
+                        Err(format!("Failed to parse JSON: {:?}", e))
+                    }
                 }
             } else {
                 error!("Request failed with status: {}", response.status());
-                return Err(format!(
+                Err(format!(
                     "Request for game ID {} failed with status: {}",
                     game_id,
                     response.status()
-                ));
+                ))
             }
-        } else if let Err(e) = res {
-            error!("Failed to send request: {:?}", e);
+        } else {
+            error!("Unexpected error occurred");
+            Err("Unexpected error occurred".to_string())
         }
 
-        let mut secret_keys = HashMap::new();
-        let mut attestations = HashMap::new();
-
-        for outcome in &[GameOutcome::White, GameOutcome::Black, GameOutcome::Draw] {
-            let secret_key = Scalar::random(&mut rand::thread_rng());
-            let encrypted_key = self.schnorr.encryption_key_for(&secret_key);
-
-            let message = Message::<Public>::plain(
-                match outcome {
-                    GameOutcome::White => "White",
-                    GameOutcome::Black => "Black",
-                    GameOutcome::Draw => "Draw",
-                },
-                outcome.message(),
-            );
-
-            let adaptor_sig =
-                self.schnorr
-                    .encrypted_sign(&self.signing_keypair, &encrypted_key, message);
-
-            attestations.insert(
-                *outcome,
-                Attestation {
-                    key: encrypted_key,
-                    adaptor_sig,
-                    message: outcome.message().to_vec(),
-                },
-            );
-
-            secret_keys.insert(*outcome, secret_key);
-        }
-
-        let dl_chess = DLChess {
-            oracle_public_key: self.signing_keypair.public_key(),
-            attestations: GameAttestations {
-                white: attestations[&GameOutcome::White].clone(),
-                black: attestations[&GameOutcome::Black].clone(),
-                draw: attestations[&GameOutcome::Draw].clone(),
-            },
-            outcome: None,
-            game_id: game_id.clone(),
-            game_over: false,
-        };
-
-        games.insert(
-            game_id.clone(),
-            Game {
-                dl_chess: dl_chess.clone(),
-                secret_keys,
-            },
-        );
-
-        Ok(dl_chess)
+        // Ok(dl_chess)
     }
 }
 
