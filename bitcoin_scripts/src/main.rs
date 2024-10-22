@@ -105,8 +105,6 @@ async fn unlock_script(
         })
         .collect();
 
-    println!("Found UTXOs: {:?}. {:?}", inputs.len(), inputs);
-
     let mut prev_tx = Vec::new();
 
     for input in inputs.clone() {
@@ -186,10 +184,10 @@ async fn unlock_script(
             &get_xonly_pubkey(WHITE_PUB_KEY).unwrap(),
         );
 
-        match verify_oracle_sig {
-            Ok(_) => println!("Orcale signature verified"),
-            Err(e) => println!("Signature verification failed: {:?}", e),
-        };
+        assert!(
+            verify_oracle_sig.is_ok(),
+            "Oracle signature verification failed"
+        );
 
         let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, &white_player_keys);
 
@@ -199,10 +197,10 @@ async fn unlock_script(
             &white_player_keys.x_only_public_key().0,
         );
 
-        match verify_player_sig {
-            Ok(_) => println!("Winning player signature verified"),
-            Err(e) => println!("Signature verification failed: {:?}", e),
-        };
+        assert!(
+            verify_player_sig.is_ok(),
+            "Winning player signature verification failed"
+        );
 
         let script_ver = (white_winner_script.clone(), LeafVersion::TapScript);
         let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
@@ -224,7 +222,11 @@ async fn unlock_script(
         .send()
         .await;
 
-    println!("TXID: {:?}", res);
+    if let Ok(response) = res {
+        println!("mutinynet status code: {}", response.status().as_u16());
+    } else if let Err(e) = res {
+        println!("Failed to send request: {:?}", e);
+    }
 }
 
 fn create_script(
@@ -247,8 +249,6 @@ fn create_script(
         get_xonly_pubkey(BLACK_PUB_KEY)?,
         black_player_keys.x_only_public_key().0,
     );
-
-    println!("White Script: {:?}", white_script);
 
     let taproot_spend_info = TaprootBuilder::new()
         .add_leaf(1, white_script)
