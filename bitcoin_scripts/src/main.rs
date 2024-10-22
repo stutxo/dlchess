@@ -77,7 +77,6 @@ pub struct Attestation {
 
 #[derive(Subcommand)]
 enum Commands {
-    CreateAddress,
     SpendAddressUnHappyPath,
 }
 
@@ -92,9 +91,9 @@ struct Utxo {
 #[derive(Debug, Serialize, Deserialize)]
 struct UtxoStatus {
     confirmed: bool,
-    block_height: u64,
-    block_hash: String,
-    block_time: u64,
+    block_height: Option<u64>,
+    block_hash: Option<String>,
+    block_time: Option<u64>,
 }
 
 #[tokio::main]
@@ -111,18 +110,6 @@ async fn main() {
     let black_player_keys = Keypair::from_secret_key(&secp, &black_player_secret);
 
     match args.command {
-        Commands::CreateAddress => {
-            match create_script(white_player_keys, black_player_keys, args.game_id.as_str()).await {
-                Ok((taproot_spend_info, oracle_response)) => {
-                    let address = Address::p2tr_tweaked(
-                        taproot_spend_info.output_key(),
-                        bitcoin::Network::Signet,
-                    );
-                    println!("🎉 Address created successfully: {:?}", address)
-                }
-                Err(e) => println!("Error creating address: {}", e),
-            }
-        }
         Commands::SpendAddressUnHappyPath => {
             match create_script(white_player_keys, black_player_keys, args.game_id.as_str()).await {
                 Ok((taproot_spend_info, oracle_response)) => {
@@ -147,7 +134,6 @@ async fn unlock_script(
     oracle_response: DLChess,
 ) {
     let address = Address::p2tr_tweaked(taproot_spend_info.output_key(), bitcoin::Network::Signet);
-    println!("Game Address: {address}",);
 
     if !oracle_response.game_over {
         println!("Game still in progress, cannot spend yet");
@@ -249,12 +235,16 @@ async fn unlock_script(
         .attestation
         .message
     {
-        msg if msg == b"white" => &white_player_keys,
-        msg if msg == b"black" => &black_player_keys,
+        msg if msg == b"white" => {
+            println!("🔑 Winning player: White");
+            &white_player_keys
+        }
+        msg if msg == b"black" => {
+            println!("🔑 Winning player: Black");
+            &black_player_keys
+        }
         _ => panic!("Invalid outcome for now"),
     };
-
-    println!("🔑 Winning player: {:?}", winning_player);
 
     let oracle_winning_decryption_key = schnorr.recover_decryption_key(
         winning_pub_key,

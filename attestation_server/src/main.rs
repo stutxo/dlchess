@@ -100,25 +100,23 @@ impl ChessOracle {
         }
     }
 
-    async fn generate_game_setup(&self, game_id: String) -> DLChess {
+    async fn generate_game_setup(&self, game_id: String) -> Result<DLChess, String> {
+        let client = Client::new();
+        let url = format!("https://lichess.org/api/game/{}", game_id);
+        let res = client.get(url).send().await;
+
         let mut games = self.games.lock().await;
 
-        if let Some(game) = games.get_mut(&game_id) {
-            if !game.dl_chess.game_over {
-                let client = Client::new();
+        if let Ok(response) = res {
+            if response.status().is_success() {
+                match response.json::<Value>().await {
+                    Ok(json) => {
+                        info!("{}: Game status: {}", game_id, json["status"]);
+                        if let Some(winner) = json["winner"].as_str() {
+                            info!("{}: Winner : {}", game_id, winner);
 
-                let url = format!("https://lichess.org/api/game/{}", game_id);
-
-                let res = client.get(url).send().await;
-
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        match response.json::<Value>().await {
-                            Ok(json) => {
-                                info!("{}: Game status: {}", game_id, json["status"]);
-                                if let Some(winner) = json["winner"].as_str() {
-                                    info!("{}: Winner : {}", game_id, winner);
-
+                            if let Some(game) = games.get_mut(&game_id) {
+                                if !game.dl_chess.game_over {
                                     let winning_outcome = match winner {
                                         "white" => GameOutcome::White,
                                         "black" => GameOutcome::Black,
@@ -132,7 +130,6 @@ impl ChessOracle {
                                     };
 
                                     let secret_key = game.secret_keys[&winning_outcome];
-
                                     let signature = self.schnorr.decrypt_signature(
                                         secret_key,
                                         attestation.adaptor_sig.clone(),
@@ -146,19 +143,22 @@ impl ChessOracle {
                                     game.dl_chess.outcome = Some(outcome);
                                     game.dl_chess.game_over = true;
                                 }
+                                return Ok(game.dl_chess.clone());
                             }
-                            Err(e) => error!("Failed to parse JSON: {:?}", e),
                         }
-                    } else {
-                        error!("Request failed with status: {}", response.status());
                     }
-                } else if let Err(e) = res {
-                    error!("Failed to send request: {:?}", e);
+                    Err(e) => error!("Failed to parse JSON: {:?}", e),
                 }
-                return game.dl_chess.clone();
             } else {
-                return game.dl_chess.clone();
+                error!("Request failed with status: {}", response.status());
+                return Err(format!(
+                    "Request for game ID {} failed with status: {}",
+                    game_id,
+                    response.status()
+                ));
             }
+        } else if let Err(e) = res {
+            error!("Failed to send request: {:?}", e);
         }
 
         let mut secret_keys = HashMap::new();
@@ -213,7 +213,7 @@ impl ChessOracle {
             },
         );
 
-        dl_chess
+        Ok(dl_chess)
     }
 }
 
@@ -235,9 +235,15 @@ async fn main() {
 }
 
 async fn get_game(Path(game_id): Path<String>, State(oracle): State<ChessOracle>) -> String {
-    let game_setup = oracle.generate_game_setup(game_id.clone()).await;
-
-    let game = serde_json::to_string(&game_setup).unwrap();
-    info!("{}: {}", game_id, game);
-    game
+    match oracle.generate_game_setup(game_id.clone()).await {
+        Ok(game_setup) => {
+            let game = serde_json::to_string(&game_setup).unwrap();
+            info!("{}: {}", game_id, game);
+            game
+        }
+        Err(error_message) => {
+            info!("Error for game {}: {}", game_id, error_message);
+            error_message
+        }
+    }
 }
