@@ -246,6 +246,7 @@ async fn unlock_script(
         _ => panic!("Invalid outcome for now"),
     };
 
+    //this is how we verify the oracle's signature is valid
     let oracle_winning_decryption_key = schnorr.recover_decryption_key(
         winning_pub_key,
         &oracle_response
@@ -263,7 +264,7 @@ async fn unlock_script(
     );
     let tap_leaf_hash = TapLeafHash::from_script(&winner_script, LeafVersion::TapScript);
 
-    let white_priv_key = Keypair::from_secret_key(
+    let winning_priv_key = Keypair::from_secret_key(
         &secp,
         &secp256k1::SecretKey::from_slice(&oracle_winning_decryption_key.unwrap().to_bytes())
             .unwrap(),
@@ -283,7 +284,7 @@ async fn unlock_script(
 
         let message = Message::from(sighash);
 
-        let oracle_signature = secp.sign_schnorr_no_aux_rand(&message, &white_priv_key);
+        let oracle_signature = secp.sign_schnorr_no_aux_rand(&message, &winning_priv_key);
 
         let verify_oracle_sig = secp.verify_schnorr(
             &oracle_signature,
@@ -296,7 +297,7 @@ async fn unlock_script(
             "Oracle signature verification failed"
         );
 
-        let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, &winning_player);
+        let winning_player_signature = secp.sign_schnorr_no_aux_rand(&message, winning_player);
 
         let verify_player_sig = secp.verify_schnorr(
             &winning_player_signature,
