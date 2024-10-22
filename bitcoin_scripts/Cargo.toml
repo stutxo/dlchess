@@ -16,3 +16,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+clap = { version = "4.5.20", features = ["derive"] }
+schnorr_fun = { version = "0.10", features = ["serde"] }
+sha2 = "0.10.8"
