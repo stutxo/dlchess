@@ -14,7 +14,7 @@ use schnorr_fun::{
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::Mutex;
-use tracing::{info, Level};
+use tracing::Level;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DLChess {
@@ -22,6 +22,7 @@ pub struct DLChess {
     attestations: GameAttestations,
     outcome: Option<Outcome>,
     game_id: String,
+    game_over: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -98,15 +99,26 @@ impl ChessOracle {
     }
 
     async fn generate_game_setup(&self, game_id: String) -> DLChess {
-        // Lock the games HashMap
         let mut games = self.games.lock().await;
 
-        // Check if the game already exists
-        if let Some(game) = games.get(&game_id) {
+        if let Some(game) = games.get_mut(&game_id) {
+            let wining_outcome = GameOutcome::White;
+            let signature = self.schnorr.decrypt_signature(
+                game.secret_keys[&wining_outcome],
+                game.dl_chess.attestations.white.adaptor_sig.clone(),
+            );
+
+            let outcome = Outcome {
+                signature,
+                attestation: game.dl_chess.attestations.white.clone(),
+            };
+
+            game.dl_chess.outcome = Some(outcome);
+            game.dl_chess.game_over = true;
+
             return game.dl_chess.clone();
         }
 
-        // Generate new secret keys for each outcome
         let mut secret_keys = HashMap::new();
         let mut attestations = HashMap::new();
 
@@ -148,9 +160,9 @@ impl ChessOracle {
             },
             outcome: None,
             game_id: game_id.clone(),
+            game_over: false,
         };
 
-        // Store the game
         games.insert(
             game_id.clone(),
             Game {
