@@ -49,12 +49,12 @@ struct Args {
     game_id: String,
 
     #[arg(
-            short,
-            long,
-            value_name = "SPEND_HAPPY",
-            help = "Set this to true if spending makes you happy. This argument is required.",
-            use_value_delimiter = false, // Ensure it does not look for multiple values
-        )]
+        short,
+        long,
+        value_name = "SPEND_HAPPY",
+        help = "Set this to true if spending makes you happy. This argument is required.",
+        use_value_delimiter = false
+    )]
     spend_happy: bool,
 }
 
