@@ -51,11 +51,11 @@ struct Args {
     #[arg(
             short,
             long,
-            value_name = "SPEND_UNHAPPY",
+            value_name = "SPEND_HAPPY",
             help = "Set this to true if spending makes you happy. This argument is required.",
             use_value_delimiter = false, // Ensure it does not look for multiple values
         )]
-    spend_unhappy: bool,
+    spend_happy: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -123,7 +123,7 @@ async fn main() {
                 white_player_keys,
                 black_player_keys,
                 oracle_response,
-                args.spend_unhappy,
+                args.spend_happy,
             )
             .await;
         }
@@ -136,7 +136,7 @@ async fn unlock_script(
     white_player_keys: Keypair,
     black_player_keys: Keypair,
     oracle_response: DLChess,
-    spend_unhappy: bool,
+    spend_happy: bool,
 ) {
     let address = Address::p2tr_tweaked(taproot_spend_info.output_key(), bitcoin::Network::Signet);
     println!("🔓 address: {:?}", address);
@@ -256,7 +256,7 @@ async fn unlock_script(
 
     let sighash_type = TapSighashType::Default;
 
-    if spend_unhappy {
+    if !spend_happy {
         let unsigned_tx_clone = unsigned_tx.clone();
 
         let winner_script = dlchess_script_win(
@@ -325,7 +325,7 @@ async fn unlock_script(
     let serialized_tx = serialize_hex(&unsigned_tx);
     println!(
         "{} Path Hex Encoded Transaction: {}",
-        if spend_unhappy { "Unhappy" } else { "Happy" },
+        if spend_happy { "Happy" } else { "Unhappy" },
         serialized_tx
     );
 
