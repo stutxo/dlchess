@@ -67,7 +67,6 @@ impl GameOutcome {
 struct Game {
     dl_chess: DLChess,
     secret_keys: HashMap<GameOutcome, Scalar>,
-    in_progress: bool,
 }
 
 #[derive(Clone)]
@@ -105,7 +104,7 @@ impl ChessOracle {
         let mut games = self.games.lock().await;
 
         if let Some(game) = games.get_mut(&game_id) {
-            if game.in_progress {
+            if !game.dl_chess.game_over {
                 let client = Client::new();
 
                 let url = format!("https://lichess.org/api/game/{}", game_id);
@@ -116,9 +115,9 @@ impl ChessOracle {
                     if response.status().is_success() {
                         match response.json::<Value>().await {
                             Ok(json) => {
-                                info!("Game status: {}", json["status"]);
+                                info!("{}: Game status: {}", game_id, json["status"]);
                                 if let Some(winner) = json["winner"].as_str() {
-                                    info!("Winner: {}", winner);
+                                    info!("{}: Winner : {}", game_id, winner);
 
                                     let winning_outcome = match winner {
                                         "white" => GameOutcome::White,
@@ -146,7 +145,6 @@ impl ChessOracle {
 
                                     game.dl_chess.outcome = Some(outcome);
                                     game.dl_chess.game_over = true;
-                                    game.in_progress = false;
                                 }
                             }
                             Err(e) => error!("Failed to parse JSON: {:?}", e),
@@ -212,7 +210,6 @@ impl ChessOracle {
             Game {
                 dl_chess: dl_chess.clone(),
                 secret_keys,
-                in_progress: true,
             },
         );
 
@@ -222,9 +219,7 @@ impl ChessOracle {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::TRACE)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let oracle = ChessOracle::new();
 
@@ -243,6 +238,6 @@ async fn get_game(Path(game_id): Path<String>, State(oracle): State<ChessOracle>
     let game_setup = oracle.generate_game_setup(game_id.clone()).await;
 
     let game = serde_json::to_string(&game_setup).unwrap();
-    info!("Game {}: {}", game_id, game);
+    info!("{}: {}", game_id, game);
     game
 }
