@@ -129,6 +129,11 @@ impl ChessOracle {
                                         GameOutcome::Draw => &game.dl_chess.attestations.draw,
                                     };
 
+                                    info!(
+                                        "{:?}: adator signature",
+                                        attestation.adaptor_sig.clone()
+                                    );
+
                                     let secret_key = game.secret_keys[&winning_outcome];
                                     let signature = self.schnorr.decrypt_signature(
                                         secret_key,
@@ -226,8 +231,6 @@ impl ChessOracle {
             error!("Unexpected error occurred");
             Err("Unexpected error occurred".to_string())
         }
-
-        // Ok(dl_chess)
     }
 }
 
