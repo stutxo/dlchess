@@ -288,7 +288,7 @@ async fn unlock_script(
         &oracle_response.outcome.as_ref().unwrap().signature,
     );
 
-    //test draw
+    //test draw (its kinda hard to force a draw in a chess game so we will hard code it for the demo)
     let oracle_draw_decryption_key =
         "62650f64bb316fb3292bbe625238c9125ece62b9ddd6ec4128c6f7c9b6474eab";
 
