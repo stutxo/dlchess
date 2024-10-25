@@ -59,6 +59,8 @@ struct Args {
 
     #[arg(long, help = "spend timeout transaction")]
     timeout: bool,
+    #[arg(long, help = "draw test transaction")]
+    draw: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -128,6 +130,7 @@ async fn main() {
                 oracle_response,
                 args.spend_happy,
                 args.timeout,
+                args.draw,
             )
             .await;
         }
@@ -142,6 +145,7 @@ async fn unlock_script(
     oracle_response: DLChess,
     spend_happy: bool,
     spend_timeout: bool,
+    spend_draw: bool,
 ) {
     let address = Address::p2tr_tweaked(taproot_spend_info.output_key(), bitcoin::Network::Signet);
     println!("🔓 address: {:?}", address);
@@ -284,7 +288,15 @@ async fn unlock_script(
         &oracle_response.outcome.as_ref().unwrap().signature,
     );
 
-    if !spend_happy && !spend_timeout {
+    //test draw
+    let oracle_draw_decryption_key =
+        "62650f64bb316fb3292bbe625238c9125ece62b9ddd6ec4128c6f7c9b6474eab";
+
+    let oracle_draw_decryption_key =
+        Scalar::<Secret, NonZero>::from_str(oracle_draw_decryption_key)
+            .expect("Failed to parse oracle decryption key");
+
+    if !spend_happy && !spend_timeout && !spend_draw {
         spend_win(
             &mut unsigned_tx,
             prev_tx,
@@ -294,7 +306,7 @@ async fn unlock_script(
             winning_player,
             oracle_winning_decryption_key,
         );
-    } else if spend_happy && !spend_timeout {
+    } else if spend_happy && !spend_timeout && !spend_draw {
         happy_spend(
             &mut unsigned_tx,
             white_player_keys,
@@ -303,7 +315,7 @@ async fn unlock_script(
             sighash_type,
             taproot_spend_info,
         );
-    } else {
+    } else if !spend_happy && spend_timeout && spend_draw {
         timeout_spend(
             &mut unsigned_tx,
             prev_tx,
@@ -312,20 +324,21 @@ async fn unlock_script(
             white_player_keys,
             black_player_keys,
         );
+    } else {
+        draw_spend(
+            &mut unsigned_tx,
+            prev_tx,
+            sighash_type,
+            taproot_spend_info,
+            oracle_response.attestations.draw.key,
+            Some(oracle_draw_decryption_key),
+            white_player_keys,
+            black_player_keys,
+        );
     }
 
     let serialized_tx = serialize_hex(&unsigned_tx);
-    println!(
-        "{} Path Hex Encoded Transaction: {}",
-        if spend_happy && !spend_timeout {
-            "Happy"
-        } else if !spend_happy && !spend_timeout {
-            "Unhappy"
-        } else {
-            "Timeout"
-        },
-        serialized_tx
-    );
+    println!("{}", serialized_tx);
 
     if !spend_timeout {
         let client = Client::new();
@@ -375,8 +388,6 @@ async fn create_script(
         white_player_keys.x_only_public_key().0,
     );
 
-    println!("White script: {:?}", white_script);
-
     let black_script = dlchess_script_win(
         XOnlyPublicKey::from_slice(&oracle_response.attestations.black.key.to_xonly_bytes())
             .unwrap(),
@@ -394,8 +405,6 @@ async fn create_script(
         white_player_keys.x_only_public_key().0,
         black_player_keys.x_only_public_key().0,
     );
-
-    println!("Black script: {:?}", black_script);
 
     let taproot_spend_info = TaprootBuilder::new()
         .add_leaf(2, white_script)
@@ -497,6 +506,7 @@ fn happy_spend(
     sighash_type: TapSighashType,
     taproot_spend_info: TaprootSpendInfo,
 ) -> &mut Transaction {
+    println!("Spending for happy path");
     let secp = Secp256k1::new();
     let mut unsigned_tx_clone = unsigned_tx.clone();
 
@@ -536,6 +546,7 @@ fn spend_win<'a>(
     winning_player: &'a Keypair,
     oracle_winning_decryption_key: Option<Scalar<Secret, NonZero>>,
 ) -> &'a mut Transaction {
+    println!("Spending for win");
     let secp = Secp256k1::new();
     let unsigned_tx_clone = unsigned_tx.clone();
 
@@ -583,6 +594,7 @@ fn timeout_spend(
     white_player_keys: Keypair,
     black_player_keys: Keypair,
 ) -> &mut Transaction {
+    println!("Spending for timeout");
     let secp = Secp256k1::new();
     let unsigned_tx_clone = unsigned_tx.clone();
 
@@ -611,6 +623,65 @@ fn timeout_spend(
 
         input.witness.push(black_player_sig.serialize());
         input.witness.push(white_player_sig.serialize());
+        input.witness.push(script_ver.0.into_bytes());
+        input.witness.push(ctrl_block.serialize());
+    }
+    unsigned_tx
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_spend(
+    unsigned_tx: &mut Transaction,
+    prev_tx: Vec<TxOut>,
+    sighash_type: TapSighashType,
+    taproot_spend_info: TaprootSpendInfo,
+    outcome_pub_key: Point<Normal>,
+    oracle_outcome_decryption_key: Option<Scalar<Secret, NonZero>>,
+    white_player_keys: Keypair,
+    black_player_keys: Keypair,
+) -> &mut Transaction {
+    println!("Spending for draw");
+    let outcome_pub_key = XOnlyPublicKey::from_slice(&outcome_pub_key.to_xonly_bytes()).unwrap();
+
+    let secp = Secp256k1::new();
+    let unsigned_tx_clone = unsigned_tx.clone();
+
+    let outcome_script = dlchess_script_draw(
+        outcome_pub_key,
+        white_player_keys.x_only_public_key().0,
+        black_player_keys.x_only_public_key().0,
+    );
+
+    let outcome_priv_key = Keypair::from_secret_key(
+        &secp,
+        &secp256k1::SecretKey::from_slice(&oracle_outcome_decryption_key.unwrap().to_bytes())
+            .unwrap(),
+    );
+
+    let tap_leaf_hash = TapLeafHash::from_script(&outcome_script, LeafVersion::TapScript);
+
+    for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
+        let sighash = SighashCache::new(&unsigned_tx_clone)
+            .taproot_script_spend_signature_hash(
+                index,
+                &Prevouts::All(&prev_tx),
+                tap_leaf_hash,
+                sighash_type,
+            )
+            .expect("failed to construct sighash");
+
+        let message = Message::from(sighash);
+
+        let oracle_signature = secp.sign_schnorr_no_aux_rand(&message, &outcome_priv_key);
+        let white_player_sig = secp.sign_schnorr_no_aux_rand(&message, &white_player_keys);
+        let black_player_sig = secp.sign_schnorr_no_aux_rand(&message, &black_player_keys);
+
+        let script_ver = (outcome_script.clone(), LeafVersion::TapScript);
+        let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
+
+        input.witness.push(black_player_sig.serialize());
+        input.witness.push(white_player_sig.serialize());
+        input.witness.push(oracle_signature.serialize());
         input.witness.push(script_ver.0.into_bytes());
         input.witness.push(ctrl_block.serialize());
     }

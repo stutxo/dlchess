@@ -173,6 +173,8 @@ impl ChessOracle {
                                     outcome.message(),
                                 );
 
+                                error!("{:?}, secret key for debug {:?}", message, secret_key);
+
                                 let adaptor_sig = self.schnorr.encrypted_sign(
                                     &self.signing_keypair,
                                     &encrypted_key,
