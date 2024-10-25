@@ -498,6 +498,7 @@ pub fn verify_all_outcomes(oracle: &DLChess) {
     }
 }
 
+//if both players agree we can just used the inernal key to spend to the winnners address
 fn happy_spend(
     unsigned_tx: &mut Transaction,
     white_player_keys: Keypair,
